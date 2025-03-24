@@ -1,12 +1,14 @@
-
 import warnings
 import numpy as np
 from scipy.integrate import solve_ivp
+from copy import deepcopy
 
 class Bloch_Simulator() : 
                                         
     def __init__(self, gamma = 2.675 * 1e8,         # rad/(T*s) 
                     T1 = 1000*1e-3, T2=1000*1e-3,   # s 
+                    Mx0 = 0.0,
+                    My0 = 0.0,
                     M0 = 1.0, 
                     phi = 0.0, 
                     omega_1 = 0.25 * 1e4,           # 1/s 
@@ -22,19 +24,25 @@ class Bloch_Simulator() :
         self.gamma = gamma
         self.T1 = T1
         self.T2 = T2
+        self.Mx0 = Mx0
+        self.My0 = My0
         self.M0 = M0
         self.phi = phi
         self.omega_1 = omega_1
         self.delta_omega = delta_omega
         self.nz = nz
         self.tw = tw
-        if(G) : self.G = 2*np.pi/(self.gamma*self.tw*self.delta_x)
+        if(G is None) : self.G = 2*np.pi/(self.gamma*self.tw*self.delta_x)
         else :  self.G = G
         # Pulse bounds
         self.lower_bound = lower_bound
         self.upper_bound = upper_bound
-        # Logged information
-        self.last_solution = None
+    
+    def set_normal_G(self) : 
+        self.G = 2*np.pi/(self.gamma*self.tw*self.delta_x)
+    
+    def copy(self) : 
+        return deepcopy(self)
 
     def _get_Beff(self, t: float, x: float, apply_sinc: bool)  -> np.ndarray:
         B1 = self._get_omega1(t) / self.gamma
@@ -42,7 +50,7 @@ class Bloch_Simulator() :
         
         Beff[0] += B1*np.cos(self.phi)
         Beff[1] += B1*np.sin(self.phi)
-        Beff[2] += self.delta_omega/self.gamma
+        Beff[2] += self.delta_omega/self.gamma #+ self.G * x
 
         if(apply_sinc) : Beff *= np.sin(2*np.pi*t/self.tw)/(2*np.pi*t/self.tw)
 
@@ -74,22 +82,24 @@ class Bloch_Simulator() :
 
         return dMdt
 
-    def solve_ivp(self, dt: float, tlin: list, x: float, apply_sinc=True, force_max_step_size=False) : # -> OdeResult
-        M0_init = np.array([0.0, 0.0, self.M0])
-        step_size = dt if force_max_step_size else None
+    def solve_ivp(self, dt: float, tlin: list, x: float, apply_sinc=True, force_max_step_size=False, *args, **kwargs) : # -> OdeResult
+        M0_init = np.array([self.Mx0, self.My0, self.M0])
 
-        print(step_size)
+        solve_kwargs = {
+            "fun": self._diff_eqn,
+            "y0": M0_init,
+            "t_span": (min(tlin), max(tlin)),
+            "t_eval": tlin,
+            "args": (x,apply_sinc,) + args,
+            "rtol": 1e-6,
+            "atol": 1e-9
+        }
+        solve_kwargs.update(kwargs)
 
-        solution = solve_ivp(fun=self._diff_eqn, 
-                             y0=M0_init, 
-                             t_span=(min(tlin), max(tlin)), 
-                             t_eval=tlin, 
-                             max_step=step_size,
-                             args=(x, apply_sinc,)
-                             )
+        if(force_max_step_size) : solve_kwargs["max_step"] = dt 
+
+        solution = solve_ivp(**solve_kwargs)
                     
-        self.last_solution = solution
-
         if not solution.success : warnings.warn(solution.message, UserWarning)
 
         return solution
