@@ -8,7 +8,7 @@ class AnalyzeMOT() :
     """
     Class for automating data analysis of TIFF-based data from a Magneto-Optical Trap.
     """
-    def __init__(self, path, sorting_method=sorted) : 
+    def __init__(self, path, sorting_method=sorted, x_offset=None, y_offset=None, image_size=None) : 
         """ 
         ---- CONSTRUCTOR ---- 
         path            :   relative or absolute path to directory containing the data.
@@ -19,6 +19,10 @@ class AnalyzeMOT() :
         self._sorting_method = sorting_method
         
         self.files = self.load_files(self.sorting_method)
+
+        self.x_offset = x_offset
+        self.y_offset = y_offset
+        self.image_size = image_size
     
     def _gaussian(self, x, *args) : 
         A, sigma, mu, D = args[0], args[1], args[2], args[3]
@@ -42,17 +46,23 @@ class AnalyzeMOT() :
         self._sorting_method = new_sorting_method
         self.files = self.load_files(self.sorting_method)
 
-    def get_image_matrix(self, filename) :
+    def get_image_matrix(self, filename, apply_zoom) :
         """
         Returns the bit-depth matrix of <filename> element in <self._path> directory.
         """
-        return plt.imread( os.path.join(self._path, filename) )
+        if apply_zoom and (self.image_size is None or self.x_offset is None or self.y_offset is None):
+            raise ValueError("To apply zoom, you must first set image_size, x_offset, and y_offset.")
+        
+        image = plt.imread( os.path.join(self._path, filename) )
+        if(apply_zoom) : image = self.zoom_matrix(image)
+        
+        return image
     
     def subtract_background(self, file_matrix, background_matrix) : 
         """
         Subtracts background bit-depth matrix <background_matrix> from <file_matrix>.  
         """
-        return np.clip(file_matrix-background_matrix, 0, 255)
+        return np.clip(file_matrix-background_matrix, a_min=0, a_max=255)
 
     def show_image(self, filename) : 
         """ 
@@ -87,22 +97,26 @@ class AnalyzeMOT() :
         if(relative_time) : metadata = metadata - metadata[0]
         return np.array(metadata)
     
-    def get_summed_bit_depths(self, threshold=0, normed=True, background_image=None) : 
+    def get_summed_bit_depths(self, threshold=0, normed=True, background_image=None, apply_zoom=False) : 
         """ 
         Computes the sum of all camera pixels of <self.files> above provided threshold
         threshold       :       pixel threshold for summation
         normed          :       return normed depth values
         """
-        background_matrix = self.get_image_matrix(background_image) if background_image else 0 
+
+        background_matrix = background_image if background_image is not None else 0 
         summed_depths = []
         for file in self.files : 
-            matrix = self.subtract_background( self.get_image_matrix(file), background_matrix )
-            summed_depths.append( np.sum(matrix[matrix > threshold]) )
+            image_matrix = self.get_image_matrix(file, apply_zoom)
+
+            image_matrix = self.subtract_background( image_matrix, background_matrix )
+
+            summed_depths.append( np.sum(image_matrix[image_matrix > threshold]) )
 
         if(normed) : summed_depths /= max(summed_depths)
         return np.array( summed_depths )
     
-    def get_saturation(self, file, threshold=0, background_image=None, maxValue=None) : 
+    def get_saturation(self, file, threshold=0, background_image=None, maxValue=None, apply_zoom=False) : 
         """ 
         Computes the degree of saturation of the image <file> by comparing the size of entries with the value <maxValue> 
         or the maximum bit-depth         and comparing it to all entries above <threshold>.
@@ -111,8 +125,8 @@ class AnalyzeMOT() :
         background_image:       image subtracted from <file> to account for background
         maxValue        :       maximum bit-depth value to use as measure of saturation
         """
-        background_matrix = self.get_image_matrix(background_image) if background_image else 0
-        matrix = self.get_image_matrix(file) - background_matrix
+        background_matrix = background_image if background_image else 0
+        matrix = self.get_image_matrix(file, apply_zoom=apply_zoom) - background_matrix
         if(maxValue is None) : maxValue = np.max(matrix)
         countmax = np.sum( matrix == np.max(matrix) )
         countgreater = np.sum( matrix > threshold )
@@ -152,3 +166,13 @@ class AnalyzeMOT() :
         popt, pcov = curve_fit(self._gaussian, np.arange(0, len(data)), data, p0=p0, absolute_sigma=absolute_sigma, sigma=sigma, bounds=bounds)
 
         return (popt, pcov, data)
+    
+    def zoom_matrix(self, image):
+        shape = np.shape(image)
+        center_x, center_y = shape[0] // 2, shape[1] // 2
+        start_x = max(center_x - (self.image_size - self.y_offset), 0)
+        end_x = min(center_x + (self.image_size + self.y_offset), shape[0])
+        start_y = max(center_y - (self.image_size + self.x_offset), 0)
+        end_y = min(center_y + (self.image_size - self.x_offset), shape[1])
+        
+        return image[start_x:end_x, start_y:end_y]
